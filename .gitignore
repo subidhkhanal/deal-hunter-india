@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.venv/
+venv/
+env/
+.env
+.idea/
+.vscode/
+.claude/
+.DS_Store
+data/seen_deals.json
