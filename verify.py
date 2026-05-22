@@ -80,7 +80,7 @@ def check_crew_shape() -> None:
     os.environ.setdefault("OPENROUTER_API_KEY", "verify-stub")
     from crew_setup import build_crew
     from tools import (
-        search_blinkit, search_zepto, search_instamart, search_bigbasket,
+        search_blinkit, search_zepto, search_flipkart, search_instamart, search_bigbasket,
         send_telegram_reply,
     )
     crew = build_crew()
@@ -90,9 +90,12 @@ def check_crew_shape() -> None:
         _fail("crew has 4 tasks", f"got {len(crew.tasks)}")
 
     scout_tools = {getattr(t, "name", str(t)) for t in crew.agents[1].tools}
-    expected_scout = {search_blinkit.name, search_zepto.name, search_instamart.name, search_bigbasket.name}
+    expected_scout = {
+        search_blinkit.name, search_zepto.name, search_flipkart.name,
+        search_instamart.name, search_bigbasket.name,
+    }
     if not expected_scout.issubset(scout_tools):
-        _fail("scout has all 4 platform tools", f"missing: {expected_scout - scout_tools}")
+        _fail("scout has all 5 platform tools", f"missing: {expected_scout - scout_tools}")
 
     responder_tools = {getattr(t, "name", str(t)) for t in crew.agents[3].tools}
     if send_telegram_reply.name not in responder_tools:

@@ -231,6 +231,133 @@ def _run_playwright_capture(
     return captured_payloads
 
 
+def _run_playwright_dom_extract(
+    search_url: str,
+    extractor_fn,
+    use_stealth: bool = True,
+) -> list[dict]:
+    """Sister of _run_playwright_capture, but for sites that render products
+    into the DOM without exposing a JSON XHR (Flipkart). Launches a Chromium,
+    navigates, then hands the loaded page to extractor_fn which returns the
+    products directly."""
+    from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+
+    products: list[dict] = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        try:
+            context = browser.new_context(
+                user_agent=USER_AGENT,
+                viewport={"width": 1366, "height": 900},
+                locale="en-IN",
+            )
+            page = context.new_page()
+            if use_stealth:
+                try:
+                    from playwright_stealth import Stealth
+                    Stealth().apply_stealth_sync(page)
+                except ImportError:
+                    pass
+
+            try:
+                page.goto(search_url, wait_until="networkidle", timeout=NAV_TIMEOUT_MS)
+            except PWTimeout:
+                pass
+            page.wait_for_timeout(WAIT_AFTER_NAV_MS)
+
+            try:
+                products = extractor_fn(page) or []
+            except Exception as exc:
+                log.warning("DOM extractor raised: %s", exc)
+                products = []
+        finally:
+            try:
+                browser.close()
+            except Exception:
+                pass
+    return products
+
+
+# Flipkart innertext glues price/MRP/discount with no spaces, e.g.
+# "₹688₹81015% off" really means price=688, MRP=810, discount=15%.
+# Split MRP from the trailing discount digits by anchoring on "% off"
+# and using non-greedy capture on MRP.
+FLIPKART_PRICE_PAIR_RE = re.compile(r"₹([\d,]+)\s*₹([\d,]+?)(\d{1,2})\s*%\s*off")
+FLIPKART_SINGLE_PRICE_RE = re.compile(r"₹\s*([\d,]+)")
+FLIPKART_QTY_RE = re.compile(r"\b(\d+(?:\.\d+)?\s*(?:kg|g|ml|l|ltr|litre|liter|piece|pack|pcs|gm|gms|grams?))\b", re.IGNORECASE)
+
+
+def _extract_flipkart_dom(page) -> list[dict]:
+    """Extract product cards from a loaded Flipkart search page.
+
+    Selectors verified on flipkart.com/search?q=milk in 2026:
+    - Card:    div[data-id]                 (40 cards on a typical SERP)
+    - Title:   img[alt] inside the card     (full product name; visible text
+               is truncated with '...')
+    - Link:    a[href*='/p/']               (Flipkart product pages all match)
+    - Price:   innerText pattern '₹X₹Y Z% off' — first ₹ = current price,
+               second ₹ = MRP. If only one ₹ appears, it's the current price.
+    - Qty:     regex over innerText for 'NN kg|g|ml|l|piece'
+    """
+    out: list[dict] = []
+    cards = page.locator("div[data-id]").all()
+    for card in cards:
+        if len(out) >= MAX_RESULTS:
+            break
+        try:
+            data_id = card.get_attribute("data-id") or ""
+            # Title via image alt (full name, not truncated)
+            try:
+                title = card.locator("img[alt]").first.get_attribute("alt", timeout=1500) or ""
+            except Exception:
+                title = ""
+            if not title:
+                continue
+            # Link
+            href = ""
+            try:
+                href = card.locator("a[href*='/p/']").first.get_attribute("href", timeout=1500) or ""
+            except Exception:
+                pass
+            url = ("https://www.flipkart.com" + href) if href.startswith("/") else (href or None)
+
+            # Price + MRP from inner text
+            text = card.inner_text(timeout=2000) or ""
+            price_inr: int | None = None
+            mrp_inr: int | None = None
+            pair = FLIPKART_PRICE_PAIR_RE.search(text)
+            if pair:
+                price_inr = _safe_int_price(pair.group(1))
+                mrp_inr = _safe_int_price(pair.group(2))
+            else:
+                single = FLIPKART_SINGLE_PRICE_RE.search(text)
+                if single:
+                    price_inr = _safe_int_price(single.group(1))
+            if price_inr is None:
+                continue  # no price → not a real product card
+            # Sanity: MRP must be > price. Otherwise our regex mis-split the
+            # ₹X₹YZ%off pattern and the "MRP" is garbage. Drop it.
+            if mrp_inr is not None and (mrp_inr <= price_inr or mrp_inr > price_inr * 20):
+                mrp_inr = None
+
+            qty_match = FLIPKART_QTY_RE.search(text)
+            qty = qty_match.group(1) if qty_match else None
+
+            out.append({
+                "platform": "flipkart",
+                "title": str(title)[:200],
+                "price_inr": price_inr,
+                "mrp_inr": mrp_inr,
+                "quantity": str(qty)[:60] if qty else None,
+                "url": url,
+                "image_url": None,
+                "in_stock": True,
+            })
+        except Exception:
+            continue
+    return out
+
+
 def _dedupe(products: list[dict]) -> list[dict]:
     seen: set[str] = set()
     out: list[dict] = []
@@ -293,6 +420,27 @@ def search_zepto(query: str) -> str:
             [p for p in payloads if isinstance(p, dict) and "layout" in p]
         ),
     )
+
+
+@tool("Search Flipkart for a product")
+def search_flipkart(query: str) -> str:
+    """Search Flipkart's general catalog via DOM scraping (no JSON XHR).
+    Returns JSON list or {"error": "..."}. Flipkart results can be broader
+    than groceries (a 'milk' search may surface protein shakes); the
+    Comparator agent filters off-topic items."""
+    if not query or not query.strip():
+        return json.dumps({"error": "empty query"})
+    q = urllib.parse.quote_plus(query.strip())
+    url = f"https://www.flipkart.com/search?q={q}"
+    try:
+        products = _run_playwright_dom_extract(url, _extract_flipkart_dom, use_stealth=True)
+    except Exception as exc:
+        log.warning("flipkart fetch failed: %s", exc)
+        return json.dumps({"error": f"flipkart fetch failed: {exc}"})
+    products = _dedupe(products)
+    if not products:
+        return json.dumps({"error": f"no flipkart results for {query!r}"})
+    return json.dumps(products, ensure_ascii=False)
 
 
 @tool("Search Swiggy Instamart for a product")

@@ -28,6 +28,7 @@ from crewai.llms.base_llm import BaseLLM
 from tools import (
     search_blinkit,
     search_zepto,
+    search_flipkart,
     search_instamart,
     search_bigbasket,
     send_telegram_reply,
@@ -137,18 +138,18 @@ def _build_agents(llm) -> tuple[Agent, Agent, Agent, Agent]:
     scout = Agent(
         role="Multi-platform Grocery Scout",
         goal=(
-            "Given a normalised query, search all four grocery platforms "
-            "(Blinkit, Zepto, Swiggy Instamart, BigBasket) and return their "
-            "raw JSON product lists."
+            "Given a normalised query, search all five platforms "
+            "(Blinkit, Zepto, Flipkart, Swiggy Instamart, BigBasket) and "
+            "return their raw JSON product lists."
         ),
         backstory=(
-            "You know each of your four search tools returns a JSON array of "
+            "You know each of your five search tools returns a JSON array of "
             "products on success, or an {\"error\": \"...\"} object on failure. "
             "Call each tool exactly once with the normalised query. Don't "
             "summarise, transform, or judge the results — pass them through. "
             "Some platforms will fail; that's OK, just include the error."
         ),
-        tools=[search_blinkit, search_zepto, search_instamart, search_bigbasket],
+        tools=[search_blinkit, search_zepto, search_flipkart, search_instamart, search_bigbasket],
         llm=llm,
         allow_delegation=False,
         verbose=True,
@@ -213,15 +214,17 @@ def build_crew() -> Crew:
 
     scan_task = Task(
         description=(
-            "Take the normalised query from the previous task. Call all four "
+            "Take the normalised query from the previous task. Call all five "
             "platform search tools with that query — exactly one call to each:\n"
             "  - Search Blinkit for a product\n"
             "  - Search Zepto for a product\n"
+            "  - Search Flipkart for a product\n"
             "  - Search Swiggy Instamart for a product\n"
             "  - Search BigBasket for a product\n"
-            "Collect the four tool outputs into one JSON object like:\n"
+            "Collect the five tool outputs into one JSON object like:\n"
             "  {{\"blinkit\": <tool output>, \"zepto\": <tool output>, "
-            "\"instamart\": <tool output>, \"bigbasket\": <tool output>}}\n"
+            "\"flipkart\": <tool output>, \"instamart\": <tool output>, "
+            "\"bigbasket\": <tool output>}}\n"
             "If a tool returned an error string, include it as-is. Do not "
             "filter, dedupe, or summarise. Return only that JSON object."
         ),
@@ -242,6 +245,10 @@ def build_crew() -> Crew:
             "the quantity is parseable\n"
             "- Prefer recognised Indian brands (Amul, Aashirvaad, Fortune, Tata, "
             "MTR, Nestle, Mother Dairy) over unknown ones, all else being equal\n"
+            "- Flipkart returns its general catalog and sometimes surfaces items "
+            "only loosely related to the query (e.g. a 'milk' search may return "
+            "chocolate shakes or paneer). Skip Flipkart entries that clearly "
+            "don't match what the user asked for.\n"
             "- If only 1-2 platforms returned anything usable, still produce a "
             "top 1 or top 2 — don't fail just because coverage is low\n\n"
             "Output JSON: {{\"picks\": [{{\"rank\": 1, \"platform\": ..., "

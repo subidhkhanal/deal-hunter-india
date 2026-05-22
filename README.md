@@ -1,6 +1,6 @@
 # Grocery Price Hunter India
 
-An interactive Telegram bot that takes a grocery query, searches multiple Indian quick-commerce platforms in parallel, and replies with the best 3 picks ranked by price + brand quality.
+An interactive Telegram bot that takes a grocery query, searches three Indian e-commerce platforms in parallel (Blinkit, Zepto, Flipkart) via headless Playwright, and replies with the best 3 picks ranked by per-unit price + brand quality.
 
 ```
    User on Telegram: "chicken 1kg"
@@ -9,12 +9,12 @@ An interactive Telegram bot that takes a grocery query, searches multiple Indian
             Query Normaliser     (LLM: clean typos, expand units)
                   │
                   ▼
-                Scout            (calls 4 platform tools)
-       ┌──────────┼──────────┬──────────┐
-       ▼          ▼          ▼          ▼
-    Blinkit    Zepto    Instamart   BigBasket
-      ✅          ✅         ❌           ❌
-       └──────────┼──────────┴──────────┘
+                Scout            (calls 5 platform tools in parallel)
+       ┌──────────┬──────────┬──────────┬──────────┐
+       ▼          ▼          ▼          ▼          ▼
+    Blinkit    Zepto    Flipkart   Instamart   BigBasket
+      ✅          ✅          ✅           ❌           ❌
+       └──────────┴──────────┴──────────┴──────────┘
                   ▼
             Comparator           (LLM: normalises ₹/kg, ranks)
                   │
@@ -29,8 +29,9 @@ An interactive Telegram bot that takes a grocery query, searches multiple Indian
 
 | Platform | State | Notes |
 |---|---|---|
-| Blinkit | ✅ Working | Plain Playwright, no defenses |
-| Zepto | ✅ Working | Plain Playwright, custom JSON shape |
+| Blinkit | ✅ Working | Plain Playwright, JSON-response interception |
+| Zepto | ✅ Working | Plain Playwright, layout-array JSON shape |
+| Flipkart | ✅ Working | Stealth + DOM scraping via `div[data-id]`. General catalog — a "milk" search returns shakes/paneer alongside actual milk; the Comparator filters off-topic items. |
 | BigBasket | ❌ Blocked | Akamai "Access Denied" — playwright-stealth doesn't bypass it. Disabled in v1. |
 | Instamart | ❌ Blocked | AWS WAF "Something went wrong" — same. Disabled in v1. |
 
