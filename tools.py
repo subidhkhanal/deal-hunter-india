@@ -231,15 +231,140 @@ def _run_playwright_capture(
     return captured_payloads
 
 
+def _run_playwright_minutes_capture(
+    search_url: str,
+    lat: float,
+    lon: float,
+) -> list[dict]:
+    """Flipkart Minutes — hyperlocal quick-commerce. Requires geolocation
+    permission + clicking the 'Use my current location' button to clear the
+    location gate. After that, Flipkart fires /api/4/page/fetch with the
+    actual product listings as JSON. We capture and return those payloads."""
+    from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+
+    captured: list[dict] = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        try:
+            context = browser.new_context(
+                user_agent=USER_AGENT,
+                viewport={"width": 1366, "height": 900},
+                locale="en-IN",
+                geolocation={"latitude": lat, "longitude": lon, "accuracy": 50},
+                permissions=["geolocation"],
+            )
+            page = context.new_page()
+            try:
+                from playwright_stealth import Stealth
+                Stealth().apply_stealth_sync(page)
+            except ImportError:
+                pass
+
+            def on_response(response):
+                try:
+                    if "api/4/page/fetch" in response.url and response.status == 200:
+                        body = response.text()
+                        if len(body) > 5000:
+                            captured.append(response.json())
+                except Exception:
+                    pass
+
+            page.on("response", on_response)
+
+            try:
+                page.goto(search_url, wait_until="networkidle", timeout=NAV_TIMEOUT_MS)
+            except PWTimeout:
+                pass
+            page.wait_for_timeout(2500)
+
+            # Click "Use my current location" to clear the gate. Geolocation
+            # permission was already granted in the context, so Flipkart can
+            # read the lat/lon we set.
+            try:
+                page.locator("text=Use my current location").first.click(timeout=5000)
+            except Exception:
+                pass
+
+            page.wait_for_timeout(8000)  # let location update + page/fetch fire
+        finally:
+            try:
+                browser.close()
+            except Exception:
+                pass
+    return captured
+
+
+def _extract_flipkart_minutes_products(payloads: list[dict]) -> list[dict]:
+    """Walk Flipkart Minutes JSON: RESPONSE.slots[].widget.data.products[] →
+    productInfo.value.{titles, pricing, baseUrl, availability}.
+    Prices are in INR rupees as decimal strings ("29.00")."""
+    out: list[dict] = []
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        slots = (payload.get("RESPONSE") or {}).get("slots") or []
+        if not isinstance(slots, list):
+            continue
+        for slot in slots:
+            widget = (slot or {}).get("widget") or {}
+            products = (widget.get("data") or {}).get("products") or []
+            if not isinstance(products, list):
+                continue
+            for prod in products:
+                product = _flipkart_minutes_product(prod)
+                if product:
+                    out.append(product)
+    return out
+
+
+def _flipkart_minutes_product(prod: dict) -> dict | None:
+    if not isinstance(prod, dict):
+        return None
+    info = prod.get("productInfo") or {}
+    value = info.get("value") or {}
+    if not value:
+        return None
+    titles = value.get("titles") or {}
+    title = titles.get("title") or titles.get("newTitle") or ""
+    if not title:
+        return None
+    pricing = value.get("pricing") or {}
+    final_price = pricing.get("finalPrice") or {}
+    price_inr = _safe_int_price(final_price.get("decimalValue"))
+    if price_inr is None:
+        return None
+    # MRP (totalPrice when discounted, else None)
+    total_price = pricing.get("totalPrice") or {}
+    mrp_inr = _safe_int_price(total_price.get("decimalValue"))
+    if mrp_inr is not None and mrp_inr <= price_inr:
+        mrp_inr = None
+    quantity = titles.get("subtitle") or None
+    availability = (value.get("availability") or {}).get("displayState", "")
+    base_url = value.get("baseUrl") or ""
+    if base_url and base_url.startswith("/"):
+        url = "https://www.flipkart.com" + base_url
+    else:
+        url = base_url or None
+    return {
+        "platform": "flipkart",
+        "title": str(title)[:200],
+        "price_inr": price_inr,
+        "mrp_inr": mrp_inr,
+        "quantity": str(quantity)[:60] if quantity else None,
+        "url": url,
+        "image_url": None,
+        "in_stock": availability.upper() == "IN_STOCK" if availability else True,
+    }
+
+
 def _run_playwright_dom_extract(
     search_url: str,
     extractor_fn,
     use_stealth: bool = True,
 ) -> list[dict]:
     """Sister of _run_playwright_capture, but for sites that render products
-    into the DOM without exposing a JSON XHR (Flipkart). Launches a Chromium,
-    navigates, then hands the loaded page to extractor_fn which returns the
-    products directly."""
+    into the DOM without exposing a JSON XHR. Launches a Chromium, navigates,
+    then hands the loaded page to extractor_fn which returns the products."""
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
     products: list[dict] = []
@@ -422,24 +547,32 @@ def search_zepto(query: str) -> str:
     )
 
 
-@tool("Search Flipkart for a product")
+@tool("Search Flipkart Minutes for a product")
 def search_flipkart(query: str) -> str:
-    """Search Flipkart's general catalog via DOM scraping (no JSON XHR).
-    Returns JSON list or {"error": "..."}. Flipkart results can be broader
-    than groceries (a 'milk' search may surface protein shakes); the
-    Comparator agent filters off-topic items."""
+    """Search Flipkart Minutes (hyperlocal quick-commerce) — the 10-15 min
+    delivery service, NOT the general Flipkart catalog. Uses geolocation
+    permission grant + button-click to clear the location gate, then captures
+    /api/4/page/fetch JSON. Returns JSON list or {"error": "..."}.
+
+    USER_LAT and USER_LON env vars override the default Bangalore coordinates
+    (12.9716, 77.5946) to get results for the user's actual area."""
     if not query or not query.strip():
         return json.dumps({"error": "empty query"})
     q = urllib.parse.quote_plus(query.strip())
-    url = f"https://www.flipkart.com/search?q={q}"
+    url = f"https://www.flipkart.com/search?q={q}&marketplace=HYPERLOCAL"
     try:
-        products = _run_playwright_dom_extract(url, _extract_flipkart_dom, use_stealth=True)
+        lat = float(os.getenv("USER_LAT", "12.9716"))
+        lon = float(os.getenv("USER_LON", "77.5946"))
+    except ValueError:
+        lat, lon = 12.9716, 77.5946
+    try:
+        payloads = _run_playwright_minutes_capture(url, lat, lon)
     except Exception as exc:
-        log.warning("flipkart fetch failed: %s", exc)
-        return json.dumps({"error": f"flipkart fetch failed: {exc}"})
-    products = _dedupe(products)
+        log.warning("flipkart minutes fetch failed: %s", exc)
+        return json.dumps({"error": f"flipkart minutes fetch failed: {exc}"})
+    products = _dedupe(_extract_flipkart_minutes_products(payloads))
     if not products:
-        return json.dumps({"error": f"no flipkart results for {query!r}"})
+        return json.dumps({"error": f"no flipkart minutes results for {query!r}"})
     return json.dumps(products, ensure_ascii=False)
 
 

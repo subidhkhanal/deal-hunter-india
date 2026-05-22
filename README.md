@@ -1,6 +1,10 @@
 # Grocery Price Hunter India
 
-An interactive Telegram bot that takes a grocery query, searches three Indian e-commerce platforms in parallel (Blinkit, Zepto, Flipkart) via headless Playwright, and replies with the best 3 picks ranked by per-unit price + brand quality.
+An interactive Telegram bot that takes a grocery query, searches three Indian quick-commerce platforms in parallel (Blinkit, Zepto, Flipkart Minutes) via headless Playwright, and replies with the best 3 picks ranked by per-unit price + brand quality.
+
+<p align="center">
+  <img src="telegram-demo.jpeg" alt="Demo: user types 'eggs', bot replies with top 3 picks with per-kg pricing and links" width="380">
+</p>
 
 ```
    User on Telegram: "chicken 1kg"
@@ -13,7 +17,8 @@ An interactive Telegram bot that takes a grocery query, searches three Indian e-
        ┌──────────┬──────────┬──────────┬──────────┐
        ▼          ▼          ▼          ▼          ▼
     Blinkit    Zepto    Flipkart   Instamart   BigBasket
-      ✅          ✅          ✅           ❌           ❌
+      ✅          ✅       Minutes        ❌           ❌
+                            ✅
        └──────────┴──────────┴──────────┴──────────┘
                   ▼
             Comparator           (LLM: normalises ₹/kg, ranks)
@@ -31,7 +36,7 @@ An interactive Telegram bot that takes a grocery query, searches three Indian e-
 |---|---|---|
 | Blinkit | ✅ Working | Plain Playwright, JSON-response interception |
 | Zepto | ✅ Working | Plain Playwright, layout-array JSON shape |
-| Flipkart | ✅ Working | Stealth + DOM scraping via `div[data-id]`. General catalog — a "milk" search returns shakes/paneer alongside actual milk; the Comparator filters off-topic items. |
+| Flipkart Minutes | ✅ Working | The hyperlocal quick-commerce service (10-15 min delivery), NOT the general Flipkart catalog. Uses `?marketplace=HYPERLOCAL`, Playwright `grant_permissions(['geolocation'])` to satisfy the location gate, and clicks the "Use my current location" button. Captures `/api/4/page/fetch` JSON. Results are clean grocery brands (Amul, Nandini, Licious, etc). |
 | BigBasket | ❌ Blocked | Akamai "Access Denied" — playwright-stealth doesn't bypass it. Disabled in v1. |
 | Instamart | ❌ Blocked | AWS WAF "Something went wrong" — same. Disabled in v1. |
 

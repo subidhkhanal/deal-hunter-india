@@ -41,13 +41,13 @@ def check_imports() -> None:
 
 
 def check_at_least_one_platform_works() -> None:
-    """Both Blinkit and Zepto rate-limit aggressive crawlers. In verify, we
-    accept partial coverage: at least one of the two should return products.
-    The crew handles partial coverage gracefully too — Comparator works with
-    whatever the Scout returned."""
-    from tools import search_blinkit, search_zepto
+    """Blinkit, Zepto, and Flipkart all rate-limit aggressive crawlers. In
+    verify we accept partial coverage: at least one of the three should
+    return products. The crew handles partial coverage gracefully too —
+    Comparator works with whatever the Scout returned."""
+    from tools import search_blinkit, search_zepto, search_flipkart
     results = {}
-    for label, tool in (("blinkit", search_blinkit), ("zepto", search_zepto)):
+    for label, tool in (("blinkit", search_blinkit), ("zepto", search_zepto), ("flipkart", search_flipkart)):
         raw = tool.func("milk")
         data = json.loads(raw)
         if isinstance(data, list) and data:
